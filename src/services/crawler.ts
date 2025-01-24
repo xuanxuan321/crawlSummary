@@ -110,7 +110,7 @@ export class Crawler {
     });
 
     // 过滤出有效的URL
-    return links.filter((url) => this.isValidUrl(url));
+    return links.filter((url: string) => this.isValidUrl(url));
   }
 
   private async crawlWithPlaywright(
@@ -257,30 +257,31 @@ export class Crawler {
     const results: CrawlResult[] = [];
     const chunks: Website[][] = [];
 
-    // 将网站列表分成多个块，每块最多包含 maxConcurrentCrawls 个网站
     for (let i = 0; i < websites.length; i += config.maxConcurrentCrawls) {
       chunks.push(websites.slice(i, i + config.maxConcurrentCrawls));
     }
 
-    // 逐块处理网站
     for (const chunk of chunks) {
-      const chunkResults = await Promise.all(
-        chunk.map(async (website) => {
-          try {
-            return await this.crawl(website);
-          } catch (error: any) {
-            console.error(`Error crawling ${website.url}:`, error);
-            return {
+      const chunkPromises = chunk.map(async (website) => {
+        try {
+          const crawlResults = await this.crawl(website);
+          return crawlResults;
+        } catch (error: any) {
+          console.error(`Error crawling ${website.url}:`, error);
+          return [
+            {
               url: website.url,
               title: website.name,
               content: "",
               timestamp: new Date(),
               error: error.message,
-            };
-          }
-        })
-      );
-      results.push(...chunkResults);
+            },
+          ] as CrawlResult[];
+        }
+      });
+
+      const chunkResults = await Promise.all(chunkPromises);
+      results.push(...chunkResults.flat());
     }
 
     return results;
