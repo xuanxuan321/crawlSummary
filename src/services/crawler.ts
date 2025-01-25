@@ -3,6 +3,7 @@ import { CrawlResult, Website } from "../types";
 import { config } from "../config/config";
 import * as fs from "fs";
 import * as path from "path";
+import axios from 'axios';
 
 const JINA_API_KEY = "jina_ae41e771c472420193006ec3972e5cbf260pT3t7p_nHdBCvTV8Hiiff347q";
 
@@ -10,13 +11,22 @@ export class Crawler {
   private browser: any;
   private crawlingUrls: Set<string> = new Set();
   private crawledUrls: Set<string> = new Set();
-  private maxDepth: number = 1; // 最大递归深度
+  private maxDepth: number = 2; // 最大递归深度，改为2以处理一级子页面
   private baseUrl: string = ""; // 基础URL，用于限制爬取范围
 
   async init() {
     this.browser = await chromium.launch({
       headless: true,
     });
+    
+    // 清空 document 目录
+    const documentDir = path.join(process.cwd(), "document");
+    if (fs.existsSync(documentDir)) {
+      console.log('清空已存在的 document 目录');
+      fs.rmSync(documentDir, { recursive: true, force: true });
+    }
+    fs.mkdirSync(documentDir, { recursive: true });
+    console.log('创建新的 document 目录:', documentDir);
   }
 
   async close() {
@@ -27,21 +37,24 @@ export class Crawler {
 
   private async processWithJina(url: string): Promise<string> {
     try {
-      const response = await fetch(`https://r.jina.ai/${url}`, {
-        method: "GET",
+      console.log(`开始调用 Jina API 处理 URL: ${url}`);
+      const response = await axios.get(`https://r.jina.ai/${url}`, {
         headers: {
           "Content-Type": "text/plain",
           Authorization: `Bearer ${JINA_API_KEY}`,
         },
       });
 
-      if (!response.ok) {
+      if (response.status !== 200) {
+        console.error(`Jina API 请求失败，状态码: ${response.status}`);
         throw new Error(`Jina API request failed with status ${response.status}`);
       }
 
-      return await response.text();
+      const text = response.data;
+      console.log(`Jina API 处理成功，返回内容长度: ${text.length}`);
+      return text;
     } catch (error: any) {
-      console.error("Error processing with Jina:", error);
+      console.error("Jina API 处理错误:", error.message);
       throw error;
     }
   }
@@ -61,15 +74,12 @@ export class Crawler {
                      `## Content\n\n${processedContent}\n`;
 
       const documentDir = path.join(process.cwd(), "document");
-      if (!fs.existsSync(documentDir)) {
-        fs.mkdirSync(documentDir, { recursive: true });
-      }
-
       const filePath = path.join(documentDir, filename);
       fs.writeFileSync(filePath, content, "utf-8");
-      console.log(`Saved content to ${filePath}`);
+      console.log(`Successfully saved content to ${filePath}`);
     } catch (error: any) {
       console.error(`Failed to save content for ${result.url}:`, error);
+      throw error;
     }
   }
 
@@ -94,7 +104,10 @@ export class Crawler {
   }
 
   private async crawlPage(url: string, depth: number = 0): Promise<CrawlResult[]> {
+    console.log(`开始爬取页面: ${url}, 深度: ${depth}`);
+    
     if (depth >= this.maxDepth || this.crawledUrls.has(url)) {
+      console.log(`跳过页面: ${url} (达到最大深度或已爬取)`);
       return [];
     }
 
@@ -103,12 +116,14 @@ export class Crawler {
     const results: CrawlResult[] = [];
 
     try {
+      console.log(`正在访问页面: ${url}`);
       await page.goto(url, {
         waitUntil: "networkidle",
         timeout: config.crawlTimeout,
       });
 
       const title = await page.title();
+      console.log(`获取到页面标题: ${title}`);
       
       const result = {
         url,
@@ -117,17 +132,27 @@ export class Crawler {
         timestamp: new Date(),
       };
 
-      await this.saveToDocument(result);
-      results.push(result);
-      this.crawledUrls.add(url);
+      try {
+        console.log(`准备保存文档: ${url}`);
+        await this.saveToDocument(result);
+        console.log(`文档保存完成: ${url}`);
+        results.push(result);
+        this.crawledUrls.add(url);
+      } catch (error) {
+        console.error(`保存文档失败: ${url}`, error);
+        // 即使保存失败，也继续爬取子页面
+      }
 
       const links = await this.extractLinks(page);
-      for (const link of links) {
-        if (!this.crawledUrls.has(link)) {
-          const subResults = await this.crawlPage(link, depth + 1);
-          results.push(...subResults);
-        }
-      }
+      console.log(`提取到 ${links.length} 个链接，当前深度: ${depth}`);
+      
+      // 并行处理所有子链接
+      const subResultsPromises = links
+        .filter(link => !this.crawledUrls.has(link))
+        .map(link => this.crawlPage(link, depth + 1));
+      
+      const subResults = await Promise.all(subResultsPromises);
+      results.push(...subResults.flat());
 
       return results;
     } catch (error: any) {

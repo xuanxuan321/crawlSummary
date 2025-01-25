@@ -131,6 +131,10 @@ export class ReportService {
       //   report: "test",
       // };
       // 3. 生成完整报告
+      return {
+        status: "success",
+        report: "test",
+      };
       console.log("正在生成完整报告...");
       const report = await this.ai.generateFinalReport(outline, sectionReports);
 
